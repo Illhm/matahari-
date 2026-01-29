@@ -2,6 +2,7 @@ import requests
 import base64
 import json
 import logging
+from bs4 import BeautifulSoup
 from typing import Dict, Any, Optional
 
 # Configure logging
@@ -144,6 +145,45 @@ class MidtransAutomator:
             logger.error(f"Error charging transaction: {e}")
             raise
 
+    def handle_3ds_redirect(self, redirect_url: str):
+        """
+        Handles the 3DS redirect by fetching the page and extracting the form details.
+        """
+        logger.info(f"Handling 3DS Redirect: {redirect_url}")
+        try:
+            response = self.session.get(redirect_url)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+            form = soup.find('form')
+
+            if form:
+                action_url = form.get('action')
+                logger.info(f"Target URL: {action_url}")
+                print(f"Target URL: {action_url}")
+
+                payload = {}
+                for input_tag in form.find_all('input'):
+                    name = input_tag.get('name')
+                    value = input_tag.get('value', '')
+                    if name:
+                        payload[name] = value
+
+                logger.info(f"Payload: {payload}")
+                print(f"Payload: {payload}")
+
+                return {
+                    "target_url": action_url,
+                    "payload": payload
+                }
+            else:
+                logger.error("No form found in the redirect page.")
+                return None
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error handling 3DS redirect: {e}")
+            raise
+
     def process_payment(self, snap_token: str, card_details: Dict[str, str]) -> Dict[str, Any]:
         """
         Orchestrates the payment flow.
@@ -170,12 +210,7 @@ class MidtransAutomator:
         redirect_url = charge_response.get("redirect_url")
         if redirect_url:
             logger.warning("3D Secure Redirect Required!")
-            logger.warning(f"Please visit: {redirect_url}")
-            return {
-                "status": "3ds_required",
-                "redirect_url": redirect_url,
-                "response": charge_response
-            }
+            return self.handle_3ds_redirect(redirect_url)
         
         status_code = charge_response.get("status_code")
         if status_code in ["200", "201"]:
