@@ -4,7 +4,7 @@ on:
     inputs:
       snap_token:
         description: 'Midtrans Snap Token'
-        required: true
+        required: false
         type: string
 
 jobs:
