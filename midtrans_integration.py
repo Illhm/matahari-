@@ -51,7 +51,32 @@ class MidtransTester:
             logger.error(f"Failed to create transaction: {e}")
             raise
 
-    def simulate_payment(self, redirect_url):
+    def load_cards(self, filepath="card.txt"):
+        """
+        Reads card details from a file.
+        Format expected: CardNumber MM/YYYY CVV
+        """
+        cards = []
+        try:
+            with open(filepath, 'r') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if len(parts) >= 3:
+                        card_number = parts[0]
+                        expiry = parts[1] # Expected MM/YYYY or similar
+                        cvv = parts[2]
+                        cards.append({
+                            "number": card_number,
+                            "expiry": expiry,
+                            "cvv": cvv
+                        })
+            logger.info(f"Loaded {len(cards)} cards from {filepath}")
+            return cards
+        except FileNotFoundError:
+            logger.error(f"Card file {filepath} not found.")
+            return []
+
+    def simulate_payment(self, redirect_url, card):
         """
         Simulates the payment process using Playwright in the Sandbox environment.
         """
@@ -61,7 +86,7 @@ class MidtransTester:
              raise ValueError("This script is restricted to Midtrans Sandbox environment only.")
 
         with sync_playwright() as p:
-            # Launch browser (headless=True for automation, set to False to see it running)
+            # Launch browser
             browser = p.chromium.launch(headless=True)
             context = browser.new_context()
             page = context.new_page()
@@ -73,51 +98,44 @@ class MidtransTester:
                 # Wait for Snap to load
                 page.wait_for_load_state("networkidle")
 
-                # Select Credit Card (This might vary depending on Snap configuration)
-                # Using generous timeout as Snap loads iframe/resources
+                # Select Credit Card
                 logger.info("Selecting Credit Card payment method...")
-                # Try finding by text or icon
                 try:
                     page.locator("div.list-title", has_text="Credit Card").click(timeout=10000)
                 except:
-                    # Fallback or maybe it's already on the card page if specific params were used
                     logger.info("Could not find 'Credit Card' list item, checking if already on form...")
                     pass
 
-                # Fill Card Details (Sandbox Data)
-                logger.info("Filling card details...")
+                # Fill Card Details
+                logger.info(f"Testing Card: {card['number'][:4]}********{card['number'][-4:]}")
 
                 # Card Number
-                page.get_by_placeholder("Card number").fill("4485000000000000") # Common Sandbox Card
+                page.get_by_placeholder("Card number").fill(card['number'])
 
                 # Expiry
-                page.get_by_placeholder("MM / YY").fill("12/30")
+                page.get_by_placeholder("MM / YY").fill(card['expiry'])
 
                 # CVV
-                page.get_by_placeholder("123").fill("123")
+                page.get_by_placeholder("123").fill(card['cvv'])
 
                 # Click Pay Now
                 logger.info("Submitting payment...")
                 page.get_by_text("Pay Now").click()
 
-                # Handle 3DS Simulator if it appears
+                # Handle 3DS Simulator
                 try:
-                    # Wait for iframe or 3DS modal
                     logger.info("Waiting for 3DS Simulator...")
-                    # 3DS in sandbox is usually an iframe or redirection
-                    # We look for the "Password" input or "OK" button in the simulator
-                    # This part is tricky as it's often in an iframe
-
-                    # Wait for a moment for 3DS to load
                     time.sleep(5)
 
-                    # Sometimes it's a redirection to another page
                     if "api.sandbox.veritrans.co.id" in page.url or "api.sandbox.midtrans.com" in page.url:
+                         # Check for failure message immediately
+                         if page.get_by_text("Transaction failed").is_visible():
+                             raise Exception("Transaction failed on 3DS page")
+
                          page.get_by_placeholder("112233").fill("112233")
                          page.get_by_text("OK").click()
                          logger.info("Entered 3DS OTP.")
                     else:
-                        # Check frames
                         for frame in page.frames:
                             if "acs" in frame.url:
                                 logger.info("Found ACS frame")
@@ -129,31 +147,46 @@ class MidtransTester:
 
                 # Verify Success
                 logger.info("Waiting for success message...")
-                page.wait_for_selector("text=Transaction Successful", timeout=15000)
-                logger.info("PAYMENT SUCCESSFUL!")
+                try:
+                    page.wait_for_selector("text=Transaction Successful", timeout=15000)
+                    logger.info("PAYMENT SUCCESSFUL!")
+                    return True
+                except:
+                    logger.error("Payment failed or timed out.")
+                    return False
 
             except PlaywrightTimeoutError:
-                logger.error("Timeout waiting for element. The flow might have changed or network is slow.")
-                # Capture screenshot for debugging
-                page.screenshot(path="error_screenshot.png")
-                logger.info("Screenshot saved to error_screenshot.png")
-                raise
+                logger.error("Timeout waiting for element.")
+                page.screenshot(path=f"error_screenshot_{card['number'][-4:]}.png")
+                return False
             except Exception as e:
                 logger.error(f"An error occurred during simulation: {e}")
-                raise
+                return False
             finally:
                 browser.close()
 
+    def run_test_suite(self):
+        cards = self.load_cards()
+        if not cards:
+            logger.error("No cards to test. Exiting.")
+            return
+
+        # Create a fresh transaction for each card attempt
+        # (Midtrans Snap tokens are often single-use or tied to specific attempts)
+        for i, card in enumerate(cards):
+            logger.info(f"--- Starting Test for Card {i+1}/{len(cards)} ---")
+            order_id = f"test-order-{int(time.time())}-{i}"
+            try:
+                url = self.create_transaction_token(order_id, 10000)
+                success = self.simulate_payment(url, card)
+                if success:
+                    logger.info("Test Suite Completed: SUCCESS found.")
+                    break # Stop on first success
+                else:
+                    logger.info("Card failed. Moving to next card...")
+            except Exception as e:
+                logger.error(f"Test iteration failed: {e}")
+
 if __name__ == "__main__":
     tester = MidtransTester()
-
-    # Example usage:
-    # 1. Create a transaction (Need valid keys)
-    # order_id = f"test-order-{int(time.time())}"
-    # try:
-    #     url = tester.create_transaction_token(order_id, 10000)
-    #     tester.simulate_payment(url)
-    # except Exception as e:
-    #     logger.error("Test failed.")
-
-    logger.info("MidtransTester initialized. Set keys and uncomment usage code to run.")
+    tester.run_test_suite()

@@ -32,7 +32,7 @@ class TestMidtransTester(unittest.TestCase):
         unsafe_url = "https://app.midtrans.com/snap/v2/vtweb/production-token"
 
         with self.assertRaises(ValueError) as cm:
-            tester.simulate_payment(unsafe_url)
+            tester.simulate_payment(unsafe_url, {"number": "123", "expiry": "01/30", "cvv": "123"})
 
         self.assertIn("restricted to Midtrans Sandbox", str(cm.exception))
 
