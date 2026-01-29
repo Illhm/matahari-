@@ -2,7 +2,11 @@ import requests
 import base64
 import json
 import logging
+import time
 from typing import Dict, Any, Optional
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -144,6 +148,47 @@ class MidtransAutomator:
             logger.error(f"Error charging transaction: {e}")
             raise
 
+    def handle_redirect(self, redirect_url: str):
+        """
+        Opens the redirect URL in a Selenium browser for manual 3DS completion.
+        """
+        logger.info(f"Opening browser for 3DS redirect: {redirect_url}")
+
+        try:
+            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+            driver.get(redirect_url)
+
+            print("\n" + "="*50)
+            print("BROWSER OPENED FOR 3DS VERIFICATION")
+            print("Please switch to the browser and complete the payment.")
+            print("The script will monitor the URL for success indicators.")
+            print("If you close the browser window, the script will assume completion.")
+            print("="*50 + "\n")
+
+            while True:
+                try:
+                    current_url = driver.current_url
+                    # Check for success indicators
+                    if "success" in current_url.lower() or "transaction_status=capture" in current_url or "status_code=200" in current_url:
+                        logger.info("Success indicator detected in URL!")
+                        time.sleep(3) # Wait a bit before closing
+                        break
+
+                    time.sleep(2)
+                except Exception:
+                    # Likely window closed
+                    logger.info("Browser window closed. Assuming completion.")
+                    break
+
+            try:
+                driver.quit()
+            except:
+                pass
+            logger.info("Browser closed.")
+
+        except Exception as e:
+            logger.error(f"Error in Selenium handling: {e}")
+
     def process_payment(self, snap_token: str, card_details: Dict[str, str]) -> Dict[str, Any]:
         """
         Orchestrates the payment flow.
@@ -170,11 +215,14 @@ class MidtransAutomator:
         redirect_url = charge_response.get("redirect_url")
         if redirect_url:
             logger.warning("3D Secure Redirect Required!")
-            logger.warning(f"Please visit: {redirect_url}")
+            self.handle_redirect(redirect_url)
+
+            # Fetch final status
+            logger.info("Fetching final transaction status...")
+            final_details = self.fetch_transaction_details(snap_token)
             return {
-                "status": "3ds_required",
-                "redirect_url": redirect_url,
-                "response": charge_response
+                "status": "completed_with_redirect",
+                "response": final_details
             }
         
         status_code = charge_response.get("status_code")
