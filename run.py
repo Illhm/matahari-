@@ -3,10 +3,13 @@ import base64
 import json
 import logging
 import time
+import os
+import sys
 from typing import Dict, Any, Optional
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -19,8 +22,8 @@ class MidtransAutomator:
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36"
         })
-        self.base_api_url = "https://api.midtrans.com"
-        self.base_app_url = "https://app.midtrans.com"
+        self.base_api_url = "https://api.sandbox.midtrans.com"
+        self.base_app_url = "https://app.sandbox.midtrans.com"
 
     def fetch_transaction_details(self, snap_token: str) -> Dict[str, Any]:
         """
@@ -155,15 +158,26 @@ class MidtransAutomator:
         logger.info(f"Opening browser for 3DS redirect: {redirect_url}")
 
         try:
-            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()))
+            options = Options()
+            if os.getenv("GITHUB_ACTIONS") or os.getenv("CI"):
+                logger.info("Running in CI environment - using Headless Chrome")
+                options.add_argument("--headless")
+                options.add_argument("--no-sandbox")
+                options.add_argument("--disable-dev-shm-usage")
+                options.add_argument("--window-size=1920,1080")
+
+            driver = webdriver.Chrome(service=ChromeService(ChromeDriverManager().install()), options=options)
             driver.get(redirect_url)
 
-            print("\n" + "="*50)
-            print("BROWSER OPENED FOR 3DS VERIFICATION")
-            print("Please switch to the browser and complete the payment.")
-            print("The script will monitor the URL for success indicators.")
-            print("If you close the browser window, the script will assume completion.")
-            print("="*50 + "\n")
+            if not (os.getenv("GITHUB_ACTIONS") or os.getenv("CI")):
+                print("\n" + "="*50)
+                print("BROWSER OPENED FOR 3DS VERIFICATION")
+                print("Please switch to the browser and complete the payment.")
+                print("The script will monitor the URL for success indicators.")
+                print("If you close the browser window, the script will assume completion.")
+                print("="*50 + "\n")
+            else:
+                logger.info("Running headless. Waiting for automated redirect or completion...")
 
             while True:
                 try:
@@ -239,20 +253,47 @@ class MidtransAutomator:
 
 if __name__ == "__main__":
     
-    SNAP_TOKEN = "79bd72b3-1ffe-405d-968d-8693e9b5aa5c"
-    CARD_DETAILS = {
-        "card_number": "5217293016120924", 
-        "card_cvv": "622",                
-        "card_exp_month": "09",           
-        "card_exp_year": "2028"           
-    }
+    SNAP_TOKEN = os.getenv("SNAP_TOKEN", "79bd72b3-1ffe-405d-968d-8693e9b5aa5c")
+
+    cards = []
+    card_file = "card.txt"
+    if os.path.exists(card_file):
+        with open(card_file, "r") as f:
+            for line in f:
+                parts = line.strip().split("|")
+                if len(parts) >= 4:
+                    cards.append({
+                        "card_number": parts[0].strip(),
+                        "card_exp_month": parts[1].strip(),
+                        "card_exp_year": parts[2].strip(),
+                        "card_cvv": parts[3].strip()
+                    })
+
+    # Fallback to single card if file empty or missing (or use the one from code as default)
+    if not cards:
+        logger.warning("No cards found in card.txt or file missing. Using default test card.")
+        cards.append({
+            "card_number": "5217293016120924",
+            "card_cvv": "622",
+            "card_exp_month": "09",
+            "card_exp_year": "2028"
+        })
     
     automator = MidtransAutomator()
-    try:
-        result = automator.process_payment(SNAP_TOKEN, CARD_DETAILS)
-        print(json.dumps(result, indent=2))
-    except Exception as e:
-        logger.error(f"Payment process failed: {e}")
+
+    for i, card in enumerate(cards):
+        logger.info(f"Processing card {i+1}/{len(cards)}: {card['card_number'][:4]}****{card['card_number'][-4:]}")
+        try:
+            result = automator.process_payment(SNAP_TOKEN, card)
+            print(json.dumps(result, indent=2))
+
+            if result.get("status") in ["success", "capture", "completed_with_redirect"]:
+                logger.info("Payment successful! Stopping iteration.")
+                break
+
+        except Exception as e:
+            logger.error(f"Payment process failed for card {card['card_number']}: {e}")
+            # Continue to next card
 
 
 
